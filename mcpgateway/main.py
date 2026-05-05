@@ -2600,8 +2600,27 @@ class AdminAuthMiddleware(BaseHTTPMiddleware):
         "/v1/admin/logout",
         "/v1/admin/forgot-password",
         "/v1/admin/reset-password",
-        "/admin/static",
+        "/admin/static",  # Legacy path
+        "/v1/admin/static",  # Versioned path
     ]
+
+    @staticmethod
+    def _strip_v1(path: str) -> str:
+        """Strip /v1 prefix from path for normalization.
+
+        Args:
+            path: Path to normalize.
+
+        Returns:
+            Path with /v1 prefix removed if present.
+
+        Examples:
+            >>> AdminAuthMiddleware._strip_v1("/v1/admin/login")
+            '/admin/login'
+            >>> AdminAuthMiddleware._strip_v1("/admin/login")
+            '/admin/login'
+        """
+        return path[3:] if path.startswith("/v1") else path
 
     @staticmethod
     def _error_response(request: Request, root_path: str, status_code: int, detail: str, error_param: str = None):
@@ -2674,13 +2693,10 @@ class AdminAuthMiddleware(BaseHTTPMiddleware):
         # Normalize to unversioned path for exempt/permission checks so that
         # both direct (/v1/admin/login) and proxy-prefixed (/qa/gateway/admin/login)
         # paths are handled uniformly.
-        def _strip_v1(p: str) -> str:
-            return p[3:] if p.startswith("/v1") else p
-
-        check_path = _strip_v1(scope_path)
+        check_path = self._strip_v1(scope_path)
 
         # Check if path is exempt (login, logout, static)
-        is_exempt = any(check_path.startswith(_strip_v1(p)) for p in self.EXEMPT_PATHS)
+        is_exempt = any(check_path.startswith(self._strip_v1(p)) for p in self.EXEMPT_PATHS)
         if is_exempt:
             return await call_next(request)
 
@@ -11949,6 +11965,37 @@ v1_router = build_v1_router(
     a2a_router=a2a_router,
 )
 app.include_router(v1_router)
+
+# ---------------------------------------------------------------------------
+# Backward-compatible legacy routes (deprecated unversioned aliases for /v1/*)
+# ---------------------------------------------------------------------------
+# Each endpoint now served at /v1/<path> is also mounted at /<path> so that
+# existing clients continue to work.  Responses from these routes receive
+# Sunset / Deprecation / Link headers via DeprecationHeadersMiddleware below.
+if settings.legacy_api_enabled:
+    # First-Party
+    from mcpgateway.api.v1 import build_legacy_router  # pylint: disable=import-outside-toplevel  # noqa: E402
+    from mcpgateway.middleware.deprecation import DeprecationHeadersMiddleware  # pylint: disable=import-outside-toplevel  # noqa: E402
+
+    legacy_router = build_legacy_router(
+        settings,
+        protocol_router=protocol_router,
+        tool_router=tool_router,
+        resource_router=resource_router,
+        prompt_router=prompt_router,
+        gateway_router=gateway_router,
+        root_router=root_router,
+        server_router=server_router,
+        metrics_router=metrics_router,
+        tag_router=tag_router,
+        export_import_router=export_import_router,
+        a2a_router=a2a_router,
+    )
+    app.include_router(legacy_router)
+    app.add_middleware(DeprecationHeadersMiddleware, sunset_date=settings.legacy_api_sunset_date)
+    logger.info("Legacy (unversioned) route shims mounted — sunset: %s", settings.legacy_api_sunset_date)
+else:
+    logger.info("Legacy route shims disabled (LEGACY_API_ENABLED=false)")
 
 # ---------------------------------------------------------------------------
 # Unversioned routes — mounted directly on app (no /v1 prefix)
