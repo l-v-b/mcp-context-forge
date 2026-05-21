@@ -753,13 +753,8 @@ class TokenScopingMiddleware:
 
         # Check if sub is numeric user ID or email
         if isinstance(sub, str) and sub.isdigit():
-            # New format: numeric user ID - need DB lookup
-            # First-Party
-            from mcpgateway.db import EmailUser  # pylint: disable=import-outside-toplevel
-
-            user_id = int(sub)
-            user = db.query(EmailUser).filter(EmailUser.id == user_id).first()
-            user_email = user.email if user else None
+            # sub claim contains email address (EmailUser uses email as primary key)
+            user_email = sub
         else:
             # Legacy format: email address (pass through)
             user_email = sub
@@ -1265,16 +1260,10 @@ class TokenScopingMiddleware:
             # Create DB session for user lookup
             db = SessionLocal()
             try:
-                # Resolve user email from token (supports both ID and email formats)
+                # Resolve user email from token
                 sub = payload.get("sub")
-                if sub and isinstance(sub, str) and sub.isdigit():
-                    # New format: numeric user ID - need DB lookup
-                    user_id = int(sub)
-                    user = db.query(EmailUser).filter(EmailUser.id == user_id).first()
-                    user_email = user.email if user else None
-                else:
-                    # Legacy format: email address (pass through)
-                    user_email = sub
+                # sub claim contains email address (EmailUser uses email as primary key)
+                user_email = sub if sub and isinstance(sub, str) else None
             finally:
                 db.close()
 

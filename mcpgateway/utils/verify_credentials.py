@@ -516,14 +516,8 @@ async def _enforce_revocation_and_active_user(payload: dict) -> None:
     sub = payload.get("sub")
     if not sub:
         username = payload.get("username")
-    elif isinstance(sub, str) and sub.isdigit():
-        # New format: numeric user ID - need DB lookup
-        with SessionLocal() as db:
-            user_id = int(sub)
-            user_obj = db.query(EmailUser).filter(EmailUser.id == user_id).first()
-            username = user_obj.email if user_obj else None
     else:
-        # Legacy format: email address (pass through)
+        # sub claim contains email address (EmailUser uses email as primary key)
         username = sub
 
     if not username:

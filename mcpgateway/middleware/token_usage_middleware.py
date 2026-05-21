@@ -152,14 +152,8 @@ class TokenUsageMiddleware:
                             from mcpgateway.db import EmailUser, SessionLocal  # pylint: disable=import-outside-toplevel
 
                             sub = payload.get("sub")
-                            if sub and isinstance(sub, str) and sub.isdigit():
-                                # New format: numeric user ID - need DB lookup
-                                with SessionLocal() as db:
-                                    user_id = int(sub)
-                                    user_obj = db.query(EmailUser).filter(EmailUser.id == user_id).first()
-                                    user_email = user_obj.email if user_obj else None
-                            else:
-                                # Legacy format: email address (pass through)
+                            if sub and isinstance(sub, str):
+                                # sub claim contains email address (EmailUser uses email as primary key)
                                 user_email = sub
                     except Exception as decode_error:
                         logger.debug(f"Failed to decode token for usage logging: {decode_error}")

@@ -180,14 +180,14 @@ class AuthContextMiddleware(BaseHTTPMiddleware):
             credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
             user = await get_current_user(credentials, request=request)
 
-            # Note: EmailUser uses 'email' as primary key, not 'id'
+            # Note: EmailUser now uses numeric 'id' as primary key (email removed from JWT for PII compliance)
             # User is already detached (created with fresh session that was closed)
             user_email = user.email
-            user_id = user_email  # For EmailUser, email IS the ID
+            user_id = str(user.id)  # Numeric user ID (no PII in logs)
 
             # Store user in request state for downstream use
             request.state.user = user
-            logger.info(f"✓ Authenticated user: {user_email if user_email else user_id}")
+            logger.info(f"✓ Authenticated user ID: {user_id}")
 
             # Log successful authentication (only if logging level is "all")
             # DB session reused from middleware or created if needed (Issue #3622)

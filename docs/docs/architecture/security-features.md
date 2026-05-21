@@ -39,7 +39,7 @@ The `jti` (JWT ID) claim is a unique identifier for each JWT token, defined in [
 # Email auth tokens (always include JTI)
 # Location: mcpgateway/routers/email_auth.py
 payload = {
-    "sub": user.email,
+    "sub": str(user.id),  # Numeric user ID (PII-free)
     "jti": str(uuid.uuid4()),  # Unique per token
     ...
 }

@@ -130,8 +130,8 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         # Try to get user from request.state (set by AuthContextMiddleware)
         if hasattr(request.state, "user") and request.state.user:
             user = request.state.user
-            # EmailUser uses 'email' as primary key
-            user_id = user.email if hasattr(user, "email") else str(user.id) if hasattr(user, "id") else None
+            # EmailUser now uses numeric 'id' as primary key
+            user_id = str(user.id) if hasattr(user, "id") else None
 
         # Bind CSRF tokens to the verified JWT session (jti) when available
         session_id = getattr(request.state, "jti", None)
@@ -147,19 +147,16 @@ class CSRFMiddleware(BaseHTTPMiddleware):
             if raw_token:
                 try:
                     payload = await verify_jwt_token_cached(raw_token, request)
-                    # Resolve user email from token (supports both ID and email formats)
+                    # Resolve user ID from token (supports both numeric ID and legacy email formats)
                     # First-Party
                     from mcpgateway.db import EmailUser, SessionLocal  # pylint: disable=import-outside-toplevel
 
                     sub = payload.get("sub")
                     if sub and isinstance(sub, str) and sub.isdigit():
-                        # New format: numeric user ID - need DB lookup
-                        with SessionLocal() as db:
-                            user_id_int = int(sub)
-                            user_obj = db.query(EmailUser).filter(EmailUser.id == user_id_int).first()
-                            user_id = user_obj.email if user_obj else None
+                        # sub claim contains numeric user ID (new format)
+                        user_id = sub
                     else:
-                        # Legacy format: email address (pass through)
+                        # Legacy format: email address (pass through for backward compatibility)
                         user_id = sub
                     session_id = payload.get("jti")
                 except Exception as exc:

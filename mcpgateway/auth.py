@@ -897,6 +897,43 @@ def _is_api_token_jti_sync(jti: str) -> bool:
         return True  # FAIL-CLOSED: treat as API token to preserve hard-block
 
 
+def _get_user_by_id_sync(user_id: int) -> Optional[EmailUser]:
+    """Synchronous helper to get user by numeric ID.
+
+    This runs in a thread pool to avoid blocking the event loop.
+
+    Args:
+        user_id: The user's numeric ID.
+
+    Returns:
+        EmailUser if found, None otherwise.
+    """
+    with fresh_db_session() as db:
+        # Third-Party
+        from sqlalchemy import select  # pylint: disable=import-outside-toplevel
+
+        result = db.execute(select(EmailUser).where(EmailUser.id == user_id))
+        user = result.scalar_one_or_none()
+        if user:
+            # Detach from session and return a copy of attributes
+            # since the session will be closed
+            return EmailUser(
+                id=user.id,
+                email=user.email,
+                password_hash=user.password_hash,
+                full_name=user.full_name,
+                is_admin=user.is_admin,
+                is_active=user.is_active,
+                auth_provider=user.auth_provider,
+                password_change_required=user.password_change_required,
+                email_verified_at=user.email_verified_at,
+                created_at=user.created_at,
+                updated_at=user.updated_at,
+                last_login=user.last_login,
+            )
+        return None
+
+
 def _get_user_by_email_sync(email: str) -> Optional[EmailUser]:
     """Synchronous helper to get user by email.
 
@@ -918,6 +955,7 @@ def _get_user_by_email_sync(email: str) -> Optional[EmailUser]:
             # Detach from session and return a copy of attributes
             # since the session will be closed
             return EmailUser(
+                id=user.id,
                 email=user.email,
                 password_hash=user.password_hash,
                 full_name=user.full_name,
@@ -1841,7 +1879,14 @@ async def get_current_user(
             )
 
     # Get user from database using fresh session in thread pool
-    user = await asyncio.to_thread(_get_user_by_email_sync, email)
+    # Check if we have numeric ID (new format) or email (legacy format)
+    sub = payload.get("sub")
+    if sub and isinstance(sub, str) and sub.isdigit():
+        # New format: numeric user ID
+        user = await asyncio.to_thread(_get_user_by_id_sync, int(sub))
+    else:
+        # Legacy format: email address
+        user = await asyncio.to_thread(_get_user_by_email_sync, email)
 
     if user is None:
         # Check if strict user-in-DB mode is enabled
@@ -1985,22 +2030,47 @@ def _inject_userinfo_instate(request: Optional[object] = None, user: Optional[Em
         request.state.plugin_global_context = global_context
 
 
-async def get_user_email_from_token(payload: dict, db: Session) -> Optional[str]:
+async def get_user_email_from_token(payload: dict, db: Optional[Session] = None) -> Optional[str]:
     """Extract user email from JWT payload.
 
-    Simplified helper that extracts email from the 'sub' claim.
-    The 'sub' claim always contains the user's email address.
+    Resolves the 'sub' claim to user email. Supports both:
+    - New format: numeric user ID (requires DB lookup)
+    - Legacy format: email address (direct return)
 
     Args:
         payload: JWT payload dictionary
-        db: Database session (unused, kept for API compatibility)
+        db: Database session for user lookup (required for numeric IDs)
 
     Returns:
-        User email string, or None if sub missing
+        User email string, or None if sub missing or user not found
 
     Example:
-        >>> payload = {"sub": "user@example.com"}
+        >>> payload = {"sub": "123"}  # Numeric ID
         >>> email = await get_user_email_from_token(payload, db)
-        >>> # Returns: "user@example.com"
+        >>> # Returns: "user@example.com" (from DB lookup)
+        >>> payload = {"sub": "user@example.com"}  # Legacy format
+        >>> email = await get_user_email_from_token(payload, db)
+        >>> # Returns: "user@example.com" (direct)
     """
-    return payload.get("sub")
+    sub = payload.get("sub")
+    if not sub:
+        return None
+
+    # Check if sub is numeric ID (new format) or email (legacy format)
+    if isinstance(sub, str) and sub.isdigit():
+        # New format: numeric user ID - need DB lookup
+        if not db:
+            # Create temporary session if not provided
+            from mcpgateway.db import SessionLocal  # pylint: disable=import-outside-toplevel
+            db = SessionLocal()
+            try:
+                user = db.query(EmailUser).filter(EmailUser.id == int(sub)).first()
+                return user.email if user else None
+            finally:
+                db.close()
+        else:
+            user = db.query(EmailUser).filter(EmailUser.id == int(sub)).first()
+            return user.email if user else None
+    else:
+        # Legacy format: email address
+        return sub

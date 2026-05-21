@@ -145,10 +145,10 @@ async def create_access_token(user: EmailUser, token_scopes: Optional[dict] = No
 
     issued_at = int(now.timestamp())
     # Create JWT payload — session token (teams resolved server-side at request time)
-    # NOTE: Using user ID in 'sub' claim (not email) to eliminate PII from tokens
+    # NOTE: EmailUser model now uses numeric ID as primary key (email removed from JWT for PII compliance)
     payload = {
         # Standard JWT claims
-        "sub": str(user.id),  # User ID (not email) - PII cleanup
+        "sub": str(user.id),  # Numeric user ID (no PII)
         "iss": settings.jwt_issuer,
         "aud": settings.jwt_audience,
         "iat": issued_at,
@@ -186,9 +186,9 @@ async def create_legacy_access_token(user: EmailUser) -> tuple[str, int]:
     expires_delta = timedelta(minutes=settings.token_expiry)
     expire = now + expires_delta
 
-    # Create simple JWT payload with user ID (NO PII)
+    # Create simple JWT payload with numeric user ID (no PII)
     payload = {
-        "sub": str(user.id),  # User ID (not email) - PII cleanup
+        "sub": str(user.id),  # Numeric user ID (no PII)
         "is_admin": bool(getattr(user, "is_admin", False)),
         "auth_provider": str(getattr(user, "auth_provider", "local")),
         "iat": int(now.timestamp()),

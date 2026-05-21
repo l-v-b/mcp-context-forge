@@ -1407,7 +1407,8 @@ class EmailUser(Base):
     instead of usernames.
 
     Attributes:
-        email (str): Primary key, unique email identifier
+        id (int): Primary key, auto-incrementing user ID
+        email (str): Unique email identifier
         password_hash (str): Argon2id hashed password
         full_name (str): Optional display name for professional appearance
         is_admin (bool): Admin privileges flag
@@ -1428,6 +1429,8 @@ class EmailUser(Base):
         ...     full_name="Alice Smith",
         ...     is_admin=False
         ... )
+        >>> user.id  # Auto-generated
+        1
         >>> user.email
         'alice@example.com'
         >>> user.is_email_verified()
@@ -1439,7 +1442,8 @@ class EmailUser(Base):
     __tablename__ = "email_users"
 
     # Core identity fields
-    email: Mapped[str] = mapped_column(String(255), primary_key=True, index=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     full_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
@@ -1469,7 +1473,7 @@ class EmailUser(Base):
         Returns:
             str: String representation of EmailUser instance
         """
-        return f"<EmailUser(email='{self.email}', full_name='{self.full_name}', is_admin={self.is_admin})>"
+        return f"<EmailUser(id={self.id}, email='{self.email}', full_name='{self.full_name}', is_admin={self.is_admin})>"
 
     def is_email_verified(self) -> bool:
         """Check if the user's email is verified.

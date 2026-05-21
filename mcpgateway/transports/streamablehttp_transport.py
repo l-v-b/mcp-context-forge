@@ -2093,15 +2093,8 @@ async def _normalize_jwt_payload(payload: dict[str, Any]) -> dict[str, Any]:
     from mcpgateway.db import EmailUser, SessionLocal  # pylint: disable=import-outside-toplevel
 
     sub = payload.get("sub")
-    if sub and isinstance(sub, str) and sub.isdigit():
-        # New format: numeric user ID - need DB lookup
-        with SessionLocal() as db:
-            user_id = int(sub)
-            user_obj = db.query(EmailUser).filter(EmailUser.id == user_id).first()
-            email = user_obj.email if user_obj else None
-    else:
-        # Legacy format: email address (pass through)
-        email = sub
+    # sub claim contains email address (EmailUser uses email as primary key)
+    email = sub if sub and isinstance(sub, str) else None
 
     jwt_is_admin = payload.get("is_admin", False)
 
@@ -4958,15 +4951,8 @@ class _StreamableHttpAuthHandler:
             from mcpgateway.db import EmailUser, SessionLocal  # pylint: disable=import-outside-toplevel
 
             sub = user_payload.get("sub")
-            if sub and isinstance(sub, str) and sub.isdigit():
-                # New format: numeric user ID - need DB lookup
-                with SessionLocal() as db:
-                    user_id = int(sub)
-                    user_obj = db.query(EmailUser).filter(EmailUser.id == user_id).first()
-                    user_email = user_obj.email if user_obj else None
-            else:
-                # Legacy format: email address (pass through)
-                user_email = sub
+            # sub claim contains email address (EmailUser uses email as primary key)
+            user_email = sub if sub and isinstance(sub, str) else None
 
             nested_is_admin = user_payload.get("is_admin", False)
             is_admin = user_payload.get("is_admin", False) or nested_is_admin
