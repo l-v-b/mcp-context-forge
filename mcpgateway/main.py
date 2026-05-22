@@ -4178,7 +4178,7 @@ async def delete_server(
         request (Request): Incoming FastAPI request (for visibility scope resolution).
         purge_metrics (bool): Whether to delete raw + hourly rollup metrics for this server.
         db (Session): The database session used to interact with the data store.
-        user (str): The authenticated user making the request.
+        user (str): The authenticated user making the request. Email extracted via get_user_email() with email-over-sub precedence.
 
     Returns:
         Dict[str, str]: A success message indicating the server was deleted.
@@ -5442,7 +5442,7 @@ async def update_tool(
         tool (ToolUpdate): The updated tool information.
         request (Request): The FastAPI request object for metadata extraction.
         db (Session): The database session dependency.
-        user (str): The authenticated user making the request.
+        user (str): The authenticated user making the request. Email extracted via get_user_email() with email-over-sub precedence.
 
     Returns:
         ToolRead: The updated tool data.
@@ -5505,7 +5505,7 @@ async def delete_tool(
         tool_id (str): The ID of the tool to delete.
         purge_metrics (bool): Whether to delete raw + hourly rollup metrics for this tool.
         db (Session): The database session dependency.
-        user (str): The authenticated user making the request.
+        user (str): The authenticated user making the request. Email extracted via get_user_email() with email-over-sub precedence.
 
     Returns:
         Dict[str, str]: A confirmation message upon successful deletion.
@@ -5543,7 +5543,7 @@ async def set_tool_state(
         tool_id (str): The ID of the tool to update.
         activate (bool): Whether to activate (`True`) or deactivate (`False`) the tool.
         db (Session): The database session dependency.
-        user (str): The authenticated user making the request.
+        user (str): The authenticated user making the request. Email extracted via get_user_email() with email-over-sub precedence.
 
     Returns:
         Dict[str, Any]: The status, message, and updated tool data.
@@ -5663,7 +5663,7 @@ async def set_resource_state(
         resource_id (str): The ID of the resource.
         activate (bool): True to activate, False to deactivate.
         db (Session): Database session.
-        user (str): Authenticated user.
+        user (str): Authenticated user. Email extracted via get_user_email() with email-over-sub precedence.
 
     Returns:
         Dict[str, Any]: Status message and updated resource data.
@@ -6043,7 +6043,7 @@ async def update_resource(
         resource (ResourceUpdate): New resource data.
         request (Request): The FastAPI request object for metadata extraction.
         db (Session): Database session.
-        user (str): Authenticated user.
+        user (str): Authenticated user. Email extracted via get_user_email() with email-over-sub precedence.
 
     Returns:
         ResourceRead: The updated resource.
@@ -6106,7 +6106,7 @@ async def delete_resource(
         resource_id (str): ID of the resource to delete.
         purge_metrics (bool): Whether to delete raw + hourly rollup metrics for this resource.
         db (Session): Database session.
-        user (str): Authenticated user.
+        user (str): Authenticated user. Email extracted via get_user_email() with email-over-sub precedence.
 
     Returns:
         Dict[str, str]: Status message indicating deletion success.
@@ -6183,7 +6183,7 @@ async def set_prompt_state(
         prompt_id: ID of the prompt to update.
         activate: True to activate, False to deactivate.
         db: Database session.
-        user: Authenticated user.
+        user: Authenticated user. Email extracted via get_user_email() with email-over-sub precedence.
 
     Returns:
         Status message and updated prompt details.
@@ -6647,7 +6647,7 @@ async def delete_prompt(
         prompt_id: ID of the prompt.
         purge_metrics: Whether to delete raw + hourly rollup metrics for this prompt.
         db: Database session.
-        user: Authenticated user.
+        user: Authenticated user. Email extracted via get_user_email() with email-over-sub precedence.
 
     Returns:
         Status message.
@@ -6696,7 +6696,7 @@ async def set_gateway_state(
         gateway_id (str): String ID of the gateway to update.
         activate (bool): ``True`` to activate, ``False`` to deactivate.
         db (Session): Active SQLAlchemy session.
-        user (str): Authenticated username.
+        user (str): Authenticated username. Email extracted via get_user_email() with email-over-sub precedence.
 
     Returns:
         Dict[str, Any]: A dict containing the operation status, a message, and the updated gateway object.
@@ -6963,7 +6963,7 @@ async def update_gateway(
         gateway: Gateway update data.
         request (Request): The FastAPI request object for metadata extraction.
         db: Database session.
-        user: Authenticated user.
+        user: Authenticated user. Email extracted via get_user_email() with email-over-sub precedence.
 
     Returns:
         Updated gateway.
@@ -7019,7 +7019,7 @@ async def delete_gateway(gateway_id: str, request: Request, db: Session = Depend
         gateway_id: ID of the gateway.
         request: Incoming FastAPI request (for visibility scope resolution).
         db: Database session.
-        user: Authenticated user.
+        user: Authenticated user. Email extracted via get_user_email() with email-over-sub precedence.
 
     Returns:
         Status message.
@@ -7076,7 +7076,7 @@ async def refresh_gateway_tools(
         include_resources: Whether to include resources in the refresh.
         include_prompts: Whether to include prompts in the refresh.
         db: Database session used to validate gateway access.
-        user: Authenticated user.
+        user: Authenticated user. Email extracted via get_user_email() with email-over-sub precedence.
 
     Returns:
         GatewayRefreshResponse with counts of changes and any validation errors.
@@ -10272,7 +10272,7 @@ async def _handle_rpc_authenticated(request: Request, db: Session, user):
         if hasattr(user, "email"):
             user_id = getattr(user, "email", None)  # RBAC user object
         elif isinstance(user, dict):
-            user_id = user.get("sub") or user.get("email") or user.get("username", "unknown")  # JWT payload
+            user_id = get_user_email(user)  # JWT payload with canonical email extraction
         else:
             user_id = str(user)  # String username from basic auth
 
