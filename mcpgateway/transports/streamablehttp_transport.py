@@ -242,9 +242,61 @@ prompt_service: PromptService = PromptService()
 resource_service: ResourceService = ResourceService()
 completion_service: CompletionService = CompletionService()
 
-mcp_app: Server[Any] = Server("mcp-streamable-http")
-
 server_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("server_id", default="default_server_id")
+
+
+def _aggregate_gateway_instructions_for_current_server() -> Optional[str]:
+    """Concatenate `instructions` from each gateway backing the current virtual server.
+
+    Reads `server_id_var` to identify the active virtual server, walks the
+    associated tools to find their backing gateways, and joins each gateway's
+    `instructions` field under a `## {gateway_name}` section header. Returns
+    None when no virtual server is active or no backing gateway has a non-empty
+    `instructions` value.
+    """
+    try:
+        server_id = server_id_var.get()
+    except LookupError:
+        return None
+    if not server_id or server_id == "default_server_id":
+        return None
+    try:
+        with SessionLocal() as db:
+            server = db.execute(select(DbServer).where(DbServer.id == server_id)).scalar_one_or_none()
+            if not server:
+                return None
+            seen_gateway_ids: set[str] = set()
+            sections: List[str] = []
+            for tool in server.tools:
+                gw = tool.gateway
+                if not gw or gw.id in seen_gateway_ids or not gw.instructions:
+                    continue
+                seen_gateway_ids.add(gw.id)
+                sections.append(f"## {gw.name}\n{gw.instructions}")
+            return "\n\n".join(sections) if sections else None
+    except Exception as exc:  # noqa: BLE001 - best-effort, never fail initialize over this
+        logger.warning("Failed to aggregate gateway instructions for server %s: %s", sanitize_for_log(server_id), exc)
+        return None
+
+
+class _VirtualServer(Server[Any]):
+    """SDK Server subclass that resolves `instructions` per virtual server.
+
+    The MCP SDK builds the `initialize` response from `create_initialization_options()`,
+    which normally reads the constructor-time `instructions` argument. We override
+    it so each `/servers/{server_id}/mcp` request sees the concatenated `instructions`
+    of the gateways that back its virtual server, instead of a single static value.
+    """
+
+    def create_initialization_options(self, notification_options=None, experimental_capabilities=None):  # type: ignore[override]
+        opts = super().create_initialization_options(notification_options, experimental_capabilities)
+        aggregated = _aggregate_gateway_instructions_for_current_server()
+        if aggregated:
+            return opts.model_copy(update={"instructions": aggregated})
+        return opts
+
+
+mcp_app: _VirtualServer = _VirtualServer("mcp-streamable-http")
 # First-Party
 # request_headers_var + user_context_var live in `mcpgateway.transports.context`
 # so service-layer code can read them without importing this module (which
