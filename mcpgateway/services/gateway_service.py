@@ -5318,6 +5318,14 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
 
             gateway.last_refresh_at = datetime.now(timezone.utc)
 
+            # Persist upstream `instructions` captured at line ~5187 so routine
+            # refreshes propagate upstream guidance changes to the DB row.
+            # Only overwrite when the upstream returned a non-None value —
+            # preserves last-known-good if the upstream temporarily omits the
+            # field (e.g. transient connection blip during initialize).
+            if instructions is not None:
+                gateway.instructions = instructions
+
             total_changes = (
                 result["tools_added"]
                 + result["tools_removed"]
