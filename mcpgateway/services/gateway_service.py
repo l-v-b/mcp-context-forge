@@ -5184,7 +5184,7 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
                     _refresh_key = _enc.decrypt_secret_or_plaintext(_refresh_key)
                 except Exception:
                     logger.debug("client_key decryption skipped during gateway refresh")
-            _capabilities, tools, resources, prompts, _, instructions = await self._initialize_gateway(
+            capabilities, tools, resources, prompts, _, instructions = await self._initialize_gateway(
                 url=gateway_url,
                 authentication=gateway_auth_value,
                 transport=gateway_transport,
@@ -5318,13 +5318,15 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
 
             gateway.last_refresh_at = datetime.now(timezone.utc)
 
-            # Persist upstream `instructions` captured at line ~5187 so routine
-            # refreshes propagate upstream guidance changes to the DB row.
-            # Only overwrite when the upstream returned a non-None value —
-            # preserves last-known-good if the upstream temporarily omits the
-            # field (e.g. transient connection blip during initialize).
+            # Persist upstream `instructions` and `capabilities` captured at
+            # line ~5187 so routine refreshes propagate upstream changes to
+            # the DB row. Only overwrite when the upstream returned a non-None
+            # value — preserves last-known-good if the upstream temporarily
+            # omits the field (e.g. transient connection blip during initialize).
             if instructions is not None:
                 gateway.instructions = instructions
+            if capabilities is not None:
+                gateway.capabilities = capabilities
 
             total_changes = (
                 result["tools_added"]
