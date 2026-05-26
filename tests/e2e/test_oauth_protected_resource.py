@@ -213,8 +213,8 @@ class TestOAuthProtectedResourceMetadata:
         response = await client.post(f"/servers/{server_id}/state?activate=false", headers=TEST_AUTH_HEADER)
         assert response.status_code == 200, f"Failed to disable server: {response.text}"
 
-    async def test_server_without_oauth_returns_404(self, client: AsyncClient):
-        """Scenario 1: Server WITHOUT oauth_enabled or oauth_config returns 404."""
+    async def test_server_without_oauth_returns_bearer_only_metadata(self, client: AsyncClient):
+        """Server without oauth_enabled returns 200 with minimal RFC 9728 metadata for bearer MCP clients."""
         server_id = await self._create_server(
             client,
             {
@@ -228,8 +228,14 @@ class TestOAuthProtectedResourceMetadata:
         )
 
         response = await client.get(f"/.well-known/oauth-protected-resource/servers/{server_id}/mcp")
-        assert response.status_code == 404
-        assert "OAuth not enabled" in response.json()["detail"]
+        assert response.status_code == 200
+        data = response.json()
+        assert data["resource"].endswith(f"/servers/{server_id}/mcp")
+        assert data["bearer_methods_supported"] == ["header"]
+        assert "authorization_servers" in data
+        assert isinstance(data["authorization_servers"], list)
+        assert data["authorization_servers"]
+        assert data["authorization_servers"][0].startswith("http")
 
     async def test_server_with_oauth_enabled_returns_metadata(self, client: AsyncClient):
         """Scenario 2: Server WITH oauth_enabled=True and valid oauth_config returns 200 + RFC 9728 JSON."""
@@ -274,8 +280,8 @@ class TestOAuthProtectedResourceMetadata:
         assert "application/json" in response.headers["content-type"]
         assert "public" in response.headers.get("cache-control", "")
 
-    async def test_server_with_oauth_disabled_returns_404(self, client: AsyncClient):
-        """Scenario 3: Server with oauth_enabled=False (even with oauth_config) returns 404."""
+    async def test_server_with_oauth_disabled_returns_bearer_only_metadata(self, client: AsyncClient):
+        """oauth_enabled=False returns bearer-only metadata (config stored but SSO not active)."""
         server_id = await self._create_server(
             client,
             {
@@ -293,8 +299,14 @@ class TestOAuthProtectedResourceMetadata:
         )
 
         response = await client.get(f"/.well-known/oauth-protected-resource/servers/{server_id}/mcp")
-        assert response.status_code == 404
-        assert "OAuth not enabled" in response.json()["detail"]
+        assert response.status_code == 200
+        data = response.json()
+        assert data["bearer_methods_supported"] == ["header"]
+        assert "authorization_servers" in data
+        assert isinstance(data["authorization_servers"], list)
+        assert data["authorization_servers"]
+        # Stored IdP config is ignored for metadata while oauth_enabled is false; issuer is this gateway.
+        assert "idp.example.com" not in data["authorization_servers"][0]
 
     async def test_private_server_returns_404(self, client: AsyncClient):
         """Scenario 4: Server with visibility="private" (non-public) returns 404."""

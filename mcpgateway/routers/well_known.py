@@ -13,7 +13,7 @@ Defaults assume private API deployment with crawling disabled.
 # Standard
 from datetime import datetime, timedelta, timezone
 import re
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import urlparse, urlunparse
 
 # Third-Party
@@ -200,6 +200,54 @@ async def get_oauth_protected_resource_rfc9728(
 
     logger.debug(f"Served RFC 9728 OAuth metadata for server {server_id}")
     return JSONResponse(content=response_data, headers=headers)
+
+
+def _oauth_authorization_server_metadata_response(request: Request, issuer_subpath: Optional[str]) -> JSONResponse:
+    """RFC 8414 Authorization Server Metadata for this gateway (bearer / admin-UI token flows).
+
+    MCP clients probing Streamable HTTP always fetch PRM then RFC 8414 metadata at
+    ``/.well-known/oauth-authorization-server``. Without this route the request falls
+    through to the generic well-known file handler and returns 404, which breaks
+    discovery even when the client already has an API Bearer token configured.
+
+    Endpoints point at existing ContextForge login paths; interactive OAuth for MCP
+    may still require a full IdP. The primary goal is a valid JSON document whose
+    ``issuer`` matches ``authorization_servers`` from PRM for bearer-only servers.
+    """
+    if not settings.well_known_enabled:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    base = get_base_url_with_protocol(request).rstrip("/")
+    if issuer_subpath:
+        sub = issuer_subpath.strip("/")
+        issuer = f"{base}/{sub}" if sub else base
+    else:
+        issuer = base
+
+    metadata: dict[str, Any] = {
+        "issuer": issuer,
+        "authorization_endpoint": f"{issuer}/admin/login",
+        "token_endpoint": f"{issuer}/auth/login",
+        "registration_endpoint": f"{issuer}/oauth/register",
+        "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code", "client_credentials"],
+        "token_endpoint_auth_methods_supported": ["client_secret_post", "private_key_jwt", "none"],
+        "code_challenge_methods_supported": ["S256"],
+    }
+    headers = {"Cache-Control": f"public, max-age={settings.well_known_cache_max_age}"}
+    return JSONResponse(content=metadata, headers=headers)
+
+
+@router.get("/.well-known/oauth-authorization-server", include_in_schema=False)
+async def get_oauth_authorization_server_metadata_root(request: Request) -> JSONResponse:
+    """GET /.well-known/oauth-authorization-server (RFC 8414) when issuer has no path."""
+    return _oauth_authorization_server_metadata_response(request, None)
+
+
+@router.get("/.well-known/oauth-authorization-server/{issuer_subpath:path}", include_in_schema=False)
+async def get_oauth_authorization_server_metadata_pathed(request: Request, issuer_subpath: str) -> JSONResponse:
+    """GET /.well-known/oauth-authorization-server/{issuer-path} (RFC 8414) for path-based issuers."""
+    return _oauth_authorization_server_metadata_response(request, issuer_subpath)
 
 
 @router.get("/.well-known/oauth-protected-resource")
