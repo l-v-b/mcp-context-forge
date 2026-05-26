@@ -15,22 +15,19 @@ This module handles OAuth 2.0 Authorization Code flow endpoints including:
 # Standard
 from html import escape
 import logging
-import secrets
+import time
 from typing import Annotated, Any, Dict
 from urllib.parse import urlparse, urlunparse
-
-# First-Party - CSP nonce support
-from mcpgateway.utils.csp_nonce import get_csp_nonce_from_request
+from uuid import uuid4
 
 # Third-Party
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 # First-Party
 from mcpgateway.auth import normalize_token_teams
-from mcpgateway.common.query_params import QueryErrorCode
 from mcpgateway.common.validators import SecurityValidator
 from mcpgateway.config import settings
 from mcpgateway.db import Gateway, get_db
@@ -43,56 +40,8 @@ from mcpgateway.services.oauth_manager import OAuthError, OAuthManager
 from mcpgateway.services.token_storage_service import TokenStorageService
 from mcpgateway.utils.log_sanitizer import sanitize_for_log
 from mcpgateway.utils.paths import resolve_root_path
-from mcpgateway.utils.verify_credentials import get_auth_header_value
 
 logger = logging.getLogger(__name__)
-
-ADMIN_CSRF_COOKIE_NAME = "mcpgateway_csrf_token"
-ADMIN_CSRF_HEADER_NAME = "x-csrf-token"
-
-
-async def enforce_fetch_tools_csrf(request: Request) -> None:
-    """Validate admin CSRF token for OAuth fetch-tools mutations.
-
-    Also enforces same-origin via Origin/Referer header check to prevent
-    cross-site request forgery on this state-changing endpoint.
-    """
-    auth_header = get_auth_header_value(request.headers) or ""
-    scheme, separator, token = auth_header.partition(" ")
-    if separator and scheme.lower() == "bearer" and token.strip():
-        return
-
-    # Same-origin check: require Origin or Referer to match app domain (fail-closed)
-    origin = request.headers.get("origin")
-    referer = request.headers.get("referer")
-    candidate = origin
-    if not candidate and referer:
-        try:
-            parsed = urlparse(referer)
-            if parsed.scheme and parsed.netloc:
-                candidate = f"{parsed.scheme}://{parsed.netloc}"
-        except Exception:
-            candidate = None
-
-    if not candidate:
-        # Fail closed: missing Origin/Referer is not allowed for state-changing requests
-        raise HTTPException(status_code=403, detail="CSRF validation failed")
-
-    app_domain = str(settings.app_domain)
-    parsed_app = urlparse(app_domain)
-    app_origin = f"{parsed_app.scheme}://{parsed_app.netloc}"
-    allowed = {app_origin}
-    allowed.update(settings.csrf_trusted_origins)
-    if candidate not in allowed:
-        raise HTTPException(status_code=403, detail="CSRF validation failed")
-
-    # Double-submit cookie check
-    csrf_cookie = request.cookies.get(ADMIN_CSRF_COOKIE_NAME)
-    csrf_header = request.headers.get(ADMIN_CSRF_HEADER_NAME)
-    if not isinstance(csrf_cookie, str) or not csrf_cookie or not isinstance(csrf_header, str) or not csrf_header:
-        raise HTTPException(status_code=403, detail="CSRF validation failed")
-    if not secrets.compare_digest(csrf_header, csrf_cookie):
-        raise HTTPException(status_code=403, detail="CSRF validation failed")
 
 
 def _normalize_resource_url(url: str | None, *, preserve_query: bool = False) -> str | None:
@@ -178,6 +127,65 @@ async def _persist_learned_audience(gateway: Gateway, oauth_result: Dict[str, An
 
 
 oauth_router = APIRouter(prefix="/oauth", tags=["oauth"])
+
+
+@oauth_router.post("/register", status_code=status.HTTP_201_CREATED)
+async def rfc7591_synthetic_client_registration(request: Request) -> Dict[str, Any]:
+    """RFC 7591 Dynamic Client Registration for the gateway-as-synthetic-AS discovery path.
+
+    MCP HTTP clients require :data:`registration_endpoint` in Authorization Server metadata
+    and POST a client registration payload here. This minimal public endpoint issues
+    ephemeral **public** clients (:rfc:`7591`) without a client secret. Operators still
+    normally use admin/API tokens or full IdP-backed OAuth; this exists so Streamable
+    HTTP discovery and tooling that mandate DCR can proceed.
+
+    Disabled when ``WELL_KNOWN_ENABLED=false`` to match the synthetic AS metadata endpoint.
+    """
+    if not settings.well_known_enabled:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            body = {}
+    except Exception:
+        body = {}
+
+    redirect_uris = body.get("redirect_uris")
+    if not isinstance(redirect_uris, list) or not redirect_uris:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "invalid_redirect_uri", "error_description": "redirect_uris MUST be a non-empty array"},
+        )
+    for ru in redirect_uris:
+        if not isinstance(ru, str) or not ru.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"error": "invalid_redirect_uri", "error_description": "each redirect URI must be a non-empty string"},
+            )
+
+    grant_types = body.get("grant_types")
+    if not isinstance(grant_types, list) or not grant_types:
+        grant_types = ["authorization_code"]
+    response_types = body.get("response_types")
+    if not isinstance(response_types, list) or not response_types:
+        response_types = ["code"]
+
+    out: Dict[str, Any] = {
+        "client_id": str(uuid4()),
+        "client_id_issued_at": int(time.time()),
+        "token_endpoint_auth_method": "none",
+        "grant_types": grant_types,
+        "response_types": response_types,
+        "redirect_uris": redirect_uris,
+    }
+    client_name = body.get("client_name")
+    if isinstance(client_name, str) and client_name.strip():
+        out["client_name"] = client_name.strip()
+    # RFC 7591: optional scope list echoed when provided
+    if isinstance(body.get("scope"), str) and body["scope"].strip():
+        out["scope"] = body["scope"].strip()
+    return out
 
 
 def _require_admin_user(current_user: EmailUserResponse) -> None:
@@ -467,11 +475,11 @@ async def initiate_oauth_flow(
                     logger.error(f"DCR failed for gateway {SecurityValidator.sanitize_log_message(gateway_id)}: {dcr_err}")
                     raise HTTPException(
                         status_code=500,
-                        detail="Dynamic Client Registration failed. Please configure client_id and client_secret manually or check your OAuth server supports RFC 7591.",
+                        detail=f"Dynamic Client Registration failed: {str(dcr_err)}. Please configure client_id and client_secret manually or check your OAuth server supports RFC 7591.",
                     )
                 except Exception as dcr_ex:
                     logger.error(f"Unexpected error during DCR for gateway {SecurityValidator.sanitize_log_message(gateway_id)}: {dcr_ex}")
-                    raise HTTPException(status_code=500, detail="Failed to register OAuth client")
+                    raise HTTPException(status_code=500, detail=f"Failed to register OAuth client: {str(dcr_ex)}")
             else:
                 # DCR is disabled or auto-register is off
                 logger.warning(f"Gateway {SecurityValidator.sanitize_log_message(gateway_id)} has issuer but no client_id, and DCR auto-registration is disabled")
@@ -498,7 +506,7 @@ async def initiate_oauth_flow(
         raise
     except Exception as e:
         logger.error(f"Failed to initiate OAuth flow: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to initiate OAuth flow")
+        raise HTTPException(status_code=500, detail=f"Failed to initiate OAuth flow: {str(e)}")
 
 
 @oauth_router.get("/callback")
@@ -513,7 +521,7 @@ async def oauth_callback(
     # - `error_description` is human-readable free text per RFC 6749 Section 5.2.
     code: Annotated[str | None, Query(max_length=2048, description="Authorization code from OAuth provider")] = None,
     state: Annotated[str | None, Query(max_length=2048, description="State parameter for CSRF protection")] = None,
-    error: QueryErrorCode = None,
+    error: Annotated[str | None, Query(max_length=100, pattern=r"^[a-zA-Z0-9_]+$", description="OAuth provider error code")] = None,
     error_description: Annotated[str | None, Query(max_length=500, description="OAuth provider error description")] = None,
     # Remove the gateway_id parameter requirement
     request: Request = None,
@@ -654,9 +662,6 @@ async def oauth_callback(
         logger.info(f"Completed OAuth flow for gateway {SecurityValidator.sanitize_log_message(gateway_id)}, user {SecurityValidator.sanitize_log_message(str(result.get('user_id')))}")
 
         # Return success page with option to return to admin
-        # Get CSP nonce for inline script
-        csp_nonce = get_csp_nonce_from_request(request)
-
         return HTMLResponse(content=f"""
         <!DOCTYPE html>
         <html>
@@ -675,12 +680,8 @@ async def oauth_callback(
                     text-decoration: none;
                     border-radius: 5px;
                     margin-top: 20px;
-                    border: none;
-                    cursor: pointer;
-                    font-size: 16px;
                 }}
                 .button:hover {{ background-color: #2563eb; }}
-                .button:disabled {{ opacity: 0.6; cursor: not-allowed; }}
             </style>
         </head>
         <body>
@@ -695,7 +696,7 @@ async def oauth_callback(
             <div style="margin: 30px 0;">
                 <h3>Next Steps:</h3>
                 <p>Now that OAuth authorization is complete, you can fetch tools from the MCP server:</p>
-                <button id="fetch-tools-btn" class="button" style="background-color: #059669;">
+                <button onclick="fetchTools()" class="button" style="background-color: #059669;">
                     🔧 Fetch Tools from MCP Server
                 </button>
                 <div id="fetch-status" style="margin-top: 15px;"></div>
@@ -703,56 +704,49 @@ async def oauth_callback(
 
             <a href="{safe_root_path}/admin#gateways" class="button">Return to Admin Panel</a>
 
-            <script nonce="{csp_nonce}">
-            (function() {{
-                const button = document.getElementById('fetch-tools-btn');
+            <script>
+            async function fetchTools() {{
+                const button = event.target;
                 const statusDiv = document.getElementById('fetch-status');
 
-                button.addEventListener('click', async function() {{
-                    button.disabled = true;
-                    button.textContent = '⏳ Fetching Tools...';
-                    statusDiv.innerHTML = '<p style="color: #2563eb;">Fetching tools from MCP server...</p>';
+                button.disabled = true;
+                button.textContent = '⏳ Fetching Tools...';
+                statusDiv.innerHTML = '<p style="color: #2563eb;">Fetching tools from MCP server...</p>';
 
-                    try {{
-                        const csrfToken = document.cookie.split('; ').find(row => row.startsWith('mcpgateway_csrf_token='))?.split('=')[1] || '';
-                        const response = await fetch('{safe_root_path}/oauth/fetch-tools/{escape(str(gateway_id), quote=True)}', {{
-                            method: 'POST',
-                            credentials: 'include',
-                            headers: {{
-                                'Accept': 'application/json',
-                                'Content-Type': 'application/json',
-                                'X-CSRF-Token': decodeURIComponent(csrfToken)
-                            }}
-                        }});
+                try {{
+                    const response = await fetch('{safe_root_path}/oauth/fetch-tools/{escape(str(gateway_id), quote=True)}', {{
+                        method: 'POST',
+                        credentials: 'include',
+                        headers: {{ 'Accept': 'text/html' }}
+                    }});
 
-                        const result = await response.json();
+                    const result = await response.json();
 
-                        if (response.ok) {{
-                            statusDiv.innerHTML = `
-                                <div style="color: #059669; padding: 15px; background-color: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 5px;">
-                                    <h4>✅ Tools Fetched Successfully!</h4>
-                                    <p>${{result.message}}</p>
-                                </div>
-                            `;
-                            button.textContent = '✅ Tools Fetched';
-                            button.style.backgroundColor = '#059669';
-                        }} else {{
-                            throw new Error(result.detail || 'Failed to fetch tools');
-                        }}
-                    }} catch (error) {{
+                    if (response.ok) {{
                         statusDiv.innerHTML = `
-                            <div style="color: #dc2626; padding: 15px; background-color: #fef2f2; border: 1px solid #fecaca; border-radius: 5px;">
-                                <h4>❌ Failed to Fetch Tools</h4>
-                                <p><strong>Error:</strong> ${{error.message}}</p>
-                                <p>You can still return to the admin panel and try again later.</p>
+                            <div style="color: #059669; padding: 15px; background-color: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 5px;">
+                                <h4>✅ Tools Fetched Successfully!</h4>
+                                <p>${{result.message}}</p>
                             </div>
                         `;
-                        button.textContent = '❌ Retry Fetch Tools';
-                        button.style.backgroundColor = '#dc2626';
-                        button.disabled = false;
+                        button.textContent = '✅ Tools Fetched';
+                        button.style.backgroundColor = '#059669';
+                    }} else {{
+                        throw new Error(result.detail || 'Failed to fetch tools');
                     }}
-                }});
-            }})();
+                }} catch (error) {{
+                    statusDiv.innerHTML = `
+                        <div style="color: #dc2626; padding: 15px; background-color: #fef2f2; border: 1px solid #fecaca; border-radius: 5px;">
+                            <h4>❌ Failed to Fetch Tools</h4>
+                            <p><strong>Error:</strong> ${{error.message}}</p>
+                            <p>You can still return to the admin panel and try again later.</p>
+                        </div>
+                    `;
+                    button.textContent = '❌ Retry Fetch Tools';
+                    button.style.backgroundColor = '#dc2626';
+                    button.disabled = false;
+                }}
+            }}
             </script>
         </body>
         </html>
@@ -892,7 +886,7 @@ async def get_oauth_status(
         raise
     except Exception as e:
         logger.error(f"Failed to get OAuth status: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to get OAuth status")
+        raise HTTPException(status_code=500, detail=f"Failed to get OAuth status: {str(e)}")
 
 
 @oauth_router.post("/fetch-tools/{gateway_id}")
@@ -900,7 +894,6 @@ async def get_oauth_status(
 async def fetch_tools_after_oauth(
     gateway_id: str,
     request: Request,
-    _: None = Depends(enforce_fetch_tools_csrf),
     current_user: EmailUserResponse = Depends(get_current_user_with_permissions),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
@@ -940,10 +933,10 @@ async def fetch_tools_after_oauth(
     except GatewayConnectionError as e:
         # Configuration or token claim mismatch — 400 so operators know to fix oauth_config
         logger.error(f"Failed to fetch tools after OAuth for gateway {SecurityValidator.sanitize_log_message(gateway_id)}: {e}")
-        raise HTTPException(status_code=400, detail="Failed to fetch tools")
+        raise HTTPException(status_code=400, detail=f"Failed to fetch tools: {str(e)}")
     except Exception as e:
         logger.error(f"Failed to fetch tools after OAuth for gateway {SecurityValidator.sanitize_log_message(gateway_id)}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to fetch tools")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch tools: {str(e)}")
 
 
 # ============================================================================
@@ -1000,7 +993,7 @@ async def list_registered_oauth_clients(current_user: EmailUserResponse = Depend
 
     except Exception as e:
         logger.error(f"Failed to list registered OAuth clients: {e}")
-        raise HTTPException(status_code=500, detail="Failed to list registered clients")
+        raise HTTPException(status_code=500, detail=f"Failed to list registered clients: {str(e)}")
 
 
 @oauth_router.get("/registered-clients/{gateway_id}")
@@ -1053,7 +1046,7 @@ async def get_registered_client_for_gateway(
         raise
     except Exception as e:
         logger.error(f"Failed to get registered client for gateway {SecurityValidator.sanitize_log_message(gateway_id)}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to get registered client")
+        raise HTTPException(status_code=500, detail=f"Failed to get registered client: {str(e)}")
 
 
 @oauth_router.delete("/registered-clients/{client_id}")
@@ -1106,4 +1099,4 @@ async def delete_registered_client(client_id: str, current_user: EmailUserRespon
     except Exception as e:
         logger.error(f"Failed to delete registered client {client_id}: {e}")
         db.rollback()
-        raise HTTPException(status_code=500, detail="Failed to delete registered client")
+        raise HTTPException(status_code=500, detail=f"Failed to delete registered client: {str(e)}")
