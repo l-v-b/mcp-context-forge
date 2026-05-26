@@ -12339,7 +12339,7 @@ async def admin_add_gateway(request: Request, db: Session = Depends(get_db), use
             auth_header_key=str(form.get("auth_header_key", "")),
             auth_header_value=str(form.get("auth_header_value", "")),
             auth_headers=auth_headers if auth_headers else None,
-            auth_query_param_key=str(form.get("auth_query_param_key", "")) or None,
+            auth_query_param_key=str(form.get("auth_query_param_key", "")) or None if auth_type_from_form == "query_param" else None,
             auth_query_param_value=str(form.get("auth_query_param_value", "")) or None,
             oauth_config=oauth_config,
             one_time_auth=form.get("one_time_auth", False),
@@ -12355,7 +12355,7 @@ async def admin_add_gateway(request: Request, db: Session = Depends(get_db), use
 
     except ValidationError as ex:
         # --- Getting only the custom message from the ValueError ---
-        error_ctx = [str(err["ctx"]["error"]) for err in ex.errors()]
+        error_ctx = [str(err.get('ctx', {}).get('error', err.get('msg', str(err)))) for err in ex.errors()]
         return ORJSONResponse(content={"success": False, "message": "; ".join(error_ctx)}, status_code=422)
 
     except RuntimeError as err:
@@ -12591,7 +12591,7 @@ async def admin_edit_gateway(
             auth_header_value=str(form.get("auth_header_value", "")),
             auth_value=str(form.get("auth_value", "")),
             auth_headers=auth_headers if auth_headers else None,
-            auth_query_param_key=str(form.get("auth_query_param_key", "")) or None,
+            auth_query_param_key=str(form.get("auth_query_param_key", "")) or None if auth_type_from_form == "query_param" else None,
             auth_query_param_value=str(form.get("auth_query_param_value", "")) or None,
             one_time_auth=form.get("one_time_auth", False),
             passthrough_headers=passthrough_headers,
@@ -15752,7 +15752,7 @@ async def admin_add_a2a_agent(
             auth_headers=auth_headers if auth_headers else None,
             oauth_config=oauth_config,
             auth_value=form.get("auth_value") if form.get("auth_value") else None,
-            auth_query_param_key=str(form.get("auth_query_param_key", "")) or None,
+            auth_query_param_key=str(form.get("auth_query_param_key", "")) or None if auth_type_from_form == "query_param" else None,
             auth_query_param_value=str(form.get("auth_query_param_value", "")) or None,
             tags=tags,
             visibility=form.get("visibility", "private"),
@@ -16016,7 +16016,7 @@ async def admin_edit_a2a_agent(
             auth_header_key=str(form.get("auth_header_key", "")),
             auth_header_value=str(form.get("auth_header_value", "")),
             auth_value=str(form.get("auth_value", "")),
-            auth_query_param_key=str(form.get("auth_query_param_key", "")) or None,
+            auth_query_param_key=str(form.get("auth_query_param_key", "")) or None if auth_type_from_form == "query_param" else None,
             auth_query_param_value=str(form.get("auth_query_param_value", "")) or None,
             auth_headers=auth_headers if auth_headers else None,
             passthrough_headers=passthrough_headers,
