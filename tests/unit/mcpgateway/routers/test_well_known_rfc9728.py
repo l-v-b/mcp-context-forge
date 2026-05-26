@@ -386,8 +386,8 @@ class TestServiceLayerRFC9728Compliance:
                 db=mock_db, server_id="550e8400-e29b-41d4-a716-446655440000", resource_base_url="http://localhost:4444/servers/550e8400-e29b-41d4-a716-446655440000/mcp"
             )
 
-    def test_service_oauth_not_enabled_raises_error(self, mock_server):
-        """Test service raises ServerError when OAuth not enabled."""
+    def test_service_oauth_not_enabled_returns_bearer_only(self, mock_server):
+        """When OAuth is disabled, service returns minimal metadata for bearer-only MCP clients."""
         from mcpgateway.services.server_service import ServerService
 
         mock_server.oauth_enabled = False
@@ -395,10 +395,38 @@ class TestServiceLayerRFC9728Compliance:
         mock_db.get.return_value = mock_server
         service = ServerService()
 
-        with pytest.raises(ServerError, match="OAuth not enabled"):
-            service.get_oauth_protected_resource_metadata(
-                db=mock_db, server_id="550e8400-e29b-41d4-a716-446655440000", resource_base_url="http://localhost:4444/servers/550e8400-e29b-41d4-a716-446655440000/mcp"
-            )
+        result = service.get_oauth_protected_resource_metadata(
+            db=mock_db, server_id="550e8400-e29b-41d4-a716-446655440000", resource_base_url="http://localhost:4444/servers/550e8400-e29b-41d4-a716-446655440000/mcp"
+        )
+        assert result == {
+            "resource": "http://localhost:4444/servers/550e8400-e29b-41d4-a716-446655440000/mcp",
+            "authorization_servers": ["http://localhost:4444"],
+            "bearer_methods_supported": ["header"],
+        }
+
+
+class TestRFC8414AuthorizationServerMetadata:
+    """RFC 8414 metadata at /.well-known/oauth-authorization-server (MCP discovery)."""
+
+    def test_oauth_as_metadata_root(self, app):
+        """Gateway hosts RFC 8414 document at host-only issuer."""
+        client = TestClient(app)
+        response = client.get("/.well-known/oauth-authorization-server")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["issuer"] == "http://testserver"
+        assert data["authorization_endpoint"] == "http://testserver/admin/login"
+        assert data["token_endpoint"] == "http://testserver/auth/login"
+        assert data["registration_endpoint"] == "http://testserver/oauth/register"
+        assert "code" in data["response_types_supported"]
+
+    def test_oauth_as_metadata_pathed_issuer(self, app):
+        """Issuer with path uses RFC 8414 path suffix on well-known."""
+        client = TestClient(app)
+        response = client.get("/.well-known/oauth-authorization-server/acme/tenant1")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["issuer"] == "http://testserver/acme/tenant1"
 
 
 class TestRFC9728SecurityValidation:

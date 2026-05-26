@@ -8,6 +8,9 @@
 .htpasswd
 token.txt
 
+# Google Sheets MCP OAuth files (docker-compose.google-sheets-mcp bind mount)
+sheets-mcp-config/
+
 # ========================================
 # Virtual Environments
 # ========================================

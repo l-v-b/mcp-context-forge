@@ -16,6 +16,7 @@ import asyncio
 import binascii
 from datetime import datetime, timezone
 from typing import Any, AsyncGenerator, Dict, List, NamedTuple, Optional, Union
+from urllib.parse import urlparse, urlunparse
 
 # Third-Party
 import httpx
@@ -75,6 +76,36 @@ class _AssociationType(NamedTuple):
 
 _server_rels: dict[type[Base], Any] = {rel.mapper.class_: rel for rel in sa_inspect(DbServer).relationships if rel.mapper.class_ in set(SERVER_ASSOCIABLE_ENTITY_MODELS)}
 _LABEL_OVERRIDES: dict[type[Base], str] = {DbA2AAgent: "A2A Agent"}
+
+
+def synthetic_authorization_server_issuer(resource_base_url: str) -> str:
+    """Derive the OAuth authorization-server issuer URL for this gateway from a PRM resource URL.
+
+    MCP requires :data:`authorization_servers` in Protected Resource Metadata. For virtual
+    servers without an external IdP, we advertise this gateway (RFC 8414 issuer = base URL
+    before ``/servers/{id}/mcp``) so HTTP clients can complete discovery (RFC 8414
+    metadata at ``/.well-known/oauth-authorization-server`` on that host).
+
+    Args:
+        resource_base_url: Canonical resource URL (e.g. ``https://gw/servers/{uuid}/mcp``).
+
+    Returns:
+        Issuer string that MUST match the ``issuer`` field in RFC 8414 metadata.
+    """
+    u = (resource_base_url or "").strip().rstrip("/")
+    if u.lower().endswith("/mcp"):
+        u = u[:-4].rstrip("/")
+    marker = "/servers/"
+    if marker in u:
+        u = u[: u.rfind(marker)].rstrip("/")
+        parsed = urlparse(u)
+        if not parsed.scheme or not parsed.netloc:
+            fallback = urlparse(resource_base_url.strip())
+            return urlunparse((fallback.scheme, fallback.netloc, "", "", "", "")).rstrip("/")
+        return u
+    fallback = urlparse(resource_base_url.strip())
+    return urlunparse((fallback.scheme, fallback.netloc, "", "", "", "")).rstrip("/")
+
 
 SERVER_ASSOCIATION_TYPES: list[_AssociationType] = [
     _AssociationType(
@@ -1949,13 +1980,18 @@ class ServerService(BaseService):
         Returns:
             Dict containing RFC 9728 Protected Resource Metadata:
             - resource: The protected resource identifier (URL with /mcp suffix)
-            - authorization_servers: JSON array of authorization server issuer URIs (RFC 9728 Section 2)
-            - bearer_methods_supported: Supported bearer token methods (always ["header"])
-            - scopes_supported: Optional list of supported scopes
+            - authorization_servers: JSON array of authorization server issuer URIs (when ``oauth_enabled``)
+            - bearer_methods_supported: Supported bearer token methods (always ``["header"]``)
+            - scopes_supported: Optional list of supported scopes (when OAuth configured)
+
+            When ``oauth_enabled`` is false, returns ``resource``, ``authorization_servers``
+            (RFC 8414 issuer for this gateway — required by MCP discovery), and
+            ``bearer_methods_supported`` so clients can finish metadata probes without an
+            external IdP (API Bearer / admin-minted JWT still used on MCP requests).
 
         Raises:
             ServerNotFoundError: If server doesn't exist, is disabled, or is non-public.
-            ServerError: If OAuth is not enabled or not properly configured.
+            ServerError: If ``oauth_enabled`` is true but OAuth configuration is missing or invalid.
 
         Examples:
             >>> from mcpgateway.services.server_service import ServerService
@@ -1977,9 +2013,15 @@ class ServerService(BaseService):
         if getattr(server, "visibility", "public") != "public":
             raise ServerNotFoundError(f"Server not found: {server_id}")
 
-        # Check OAuth configuration
+        # OAuth optional: MCP clients (e.g. Streamable HTTP hosts) probe RFC 9728 metadata before connecting.
+        # When OAuth is disabled, return a minimal document so clients can use bearer tokens without SSO.
         if not getattr(server, "oauth_enabled", False):
-            raise ServerError(f"OAuth not enabled for server: {server_id}")
+            issuer = synthetic_authorization_server_issuer(resource_base_url)
+            return {
+                "resource": resource_base_url,
+                "authorization_servers": [issuer],
+                "bearer_methods_supported": ["header"],
+            }
 
         oauth_config = getattr(server, "oauth_config", None)
         if not oauth_config:
